@@ -38,6 +38,7 @@ limitations under the License.
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
@@ -998,6 +999,48 @@ class SparseWGMMAOpToLLVMPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SparseLocalLoadToLLVMPass)
 };
 
+class RemoveSparseLayoutConversionPass
+    : public PassWrapper<RemoveSparseLayoutConversionPass,
+                         OperationPass<ModuleOp>> {
+ public:
+  RemoveSparseLayoutConversionPass() = default;
+
+  StringRef getArgument() const override {
+    return "remove-sparse-layout-conversion";
+  }
+
+  void runOnOperation() override {
+    getOperation().walk([&](triton::gpu::ConvertLayoutOp op) {
+      ImplicitLocOpBuilder builder(op.getLoc(), op);
+      auto srcEncoding =
+          cast<RankedTensorType>(op.getSrc().getType()).getEncoding();
+      if (isa<triton::gpu::SharedEncodingAttr>(srcEncoding)) {
+        return;
+      }
+      auto dstType = cast<RankedTensorType>(op.getType());
+      if (!isa<triton::gpu::SparseDotMetaEncodingAttr>(dstType.getEncoding())) {
+        return;
+      }
+
+      auto ctaLayout = triton::gpu::getCTALayout(srcEncoding);
+      auto sharedLayout = builder.getAttr<triton::gpu::SharedEncodingAttr>(
+          8, 1, 1, triton::gpu::getOrder(srcEncoding), ctaLayout);
+      auto sharedMemorySpace =
+          builder.getAttr<triton::gpu::SharedMemorySpaceAttr>();
+      auto memType =
+          triton::MemDescType::get(dstType.getShape(), dstType.getElementType(),
+                                   sharedLayout, sharedMemorySpace);
+      Value alloc =
+          builder.create<triton::gpu::LocalAllocOp>(memType, op.getSrc());
+      Value convert = builder.create<triton::gpu::LocalLoadOp>(dstType, alloc);
+      op.replaceAllUsesWith(convert);
+      op.erase();
+    });
+  }
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(RemoveSparseLayoutConversionPass)
+};
+
 }  // namespace
 
 std::unique_ptr<Pass> xla::gpu::CreateAddSparseDotEncodingPass(
@@ -1022,10 +1065,15 @@ std::unique_ptr<mlir::Pass> xla::gpu::CreateSparseWGMMAOpToLLVMPass() {
   return std::make_unique<SparseWGMMAOpToLLVMPass>();
 }
 
+std::unique_ptr<mlir::Pass> xla::gpu::CreateRemoveSparseLayoutConversionPass() {
+  return std::make_unique<RemoveSparseLayoutConversionPass>();
+}
+
 void xla::gpu::RegisterSparsePasses() {
   registerPass([] { return std::make_unique<AddSparseEncodingPass>(); });
   registerPass(CreateSparseBlockedToMMAPass);
   registerPass(CreateSparseLocalLoadToLLVMPass);
   registerPass(CreateSparseDotOpToLLVMPass);
   registerPass(CreateSparseWGMMAOpToLLVMPass);
+  registerPass(CreateRemoveSparseLayoutConversionPass);
 }

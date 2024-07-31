@@ -29,6 +29,7 @@ std::unique_ptr<mlir::Pass> CreateSparseBlockedToMMAPass();
 std::unique_ptr<mlir::Pass> CreateSparseLocalLoadToLLVMPass();
 std::unique_ptr<mlir::Pass> CreateSparseDotOpToLLVMPass();
 std::unique_ptr<mlir::Pass> CreateSparseWGMMAOpToLLVMPass();
+std::unique_ptr<mlir::Pass> CreateRemoveSparseLayoutConversionPass();
 
 void RegisterSparsePasses();
 
